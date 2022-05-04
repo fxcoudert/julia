@@ -4,8 +4,8 @@ Though most code can be written in Julia, there are many high-quality, mature li
 computing already written in C and Fortran. To allow easy use of this existing code, Julia makes
 it simple and efficient to call C and Fortran functions. Julia has a "no boilerplate" philosophy:
 functions can be called directly from Julia without any "glue" code, code generation, or compilation
--- even from the interactive prompt. This is accomplished just by making an appropriate call with
-[`ccall`](@ref) syntax, which looks like an ordinary function call.
+-- even from the interactive prompt. This is accomplished just by making an appropriate call with the
+[`@ccall`](@ref) macro (or the less convenient [`ccall`](@ref) syntax, see the [`ccall` syntax section]).
 
 The code to be called must be available as a shared library. Most C and Fortran libraries ship
 compiled as shared libraries already, but if you are compiling the code yourself using GCC (or
@@ -13,59 +13,39 @@ Clang), you will need to use the `-shared` and `-fPIC` options. The machine inst
 by Julia's JIT are the same as a native C call would be, so the resulting overhead is the same
 as calling a library function from C code. [^1]
 
-Shared libraries and functions are referenced by a tuple of the form `(:function, "library")`
-or `("function", "library")` where `function` is the C-exported function name, and `library` refers
-to the shared library name.  Shared libraries available in the (platform-specific) load path will
-be resolved by name.  The full path to the library may also be specified.
-
-A function name may be used alone in place of the tuple (just `:function` or `"function"`). In
-this case the name is resolved within the current process. This form can be used to call C library
-functions, functions in the Julia runtime, or functions in an application linked to Julia.
-
 By default, Fortran compilers [generate mangled
 names](https://en.wikipedia.org/wiki/Name_mangling#Fortran) (for example,
 converting function names to lowercase or uppercase, often appending an
-underscore), and so to call a Fortran function via [`ccall`](@ref) you must pass
+underscore), and so to call a Fortran function you must pass
 the mangled identifier corresponding to the rule followed by your Fortran
-compiler.  Also, when calling a Fortran function, all inputs must be passed as
+compiler. Also, when calling a Fortran function, all inputs must be passed as
 pointers to allocated values on the heap or stack. This applies not only to
 arrays and other mutable objects which are normally heap-allocated, but also to
 scalar values such as integers and floats which are normally stack-allocated and
 commonly passed in registers when using C or Julia calling conventions.
 
-Finally, you can use [`ccall`](@ref) to actually generate a call to the library function. The arguments
-to [`ccall`](@ref) are:
+Shared libraries and functions are referenced by the form `library.function`
+where library refers to the shared library name is a string constant or literal and
+and where `function` is the C-exported function name, .
+Shared libraries available in the (platform-specific) load path will
+be resolved by name. The full path to the library may also be specified.
 
-1. A `(:function, "library")` pair (most common),
+A function name may be used alone. In this case the name is resolved within
+the current process. This form can be used to call C library functions,
+functions in the Julia runtime, or functions in an application linked to Julia.
 
-   OR
 
-   a `:function` name symbol or `"function"` name string (for symbols in the current process or libc),
 
-   OR
+Finally, you can use [`@ccall`](@ref) to actually generate a call to the library function.
+The syntax for `@ccall` is as follows
 
-   a function pointer (for example, from `dlsym`).
 
-2. The function's return type
-
-3. A tuple of input types, corresponding to the function signature
-
-4. The actual argument values to be passed to the function, if any; each is a separate parameter.
-
-!!! note
-    The `(:function, "library")` pair, return type, and input types must be literal constants
-    (i.e., they can't be variables, but see [Non-constant Function Specifications](@ref) below).
-
-    The remaining parameters are evaluated at compile time, when the containing method is defined.
-
-!!! note
-    See below for how to [map C types to Julia types](@ref mapping-c-types-to-julia).
 
 As a complete but simple example, the following calls the `clock` function from the standard C
 library on most Unix-derived systems:
 
 ```julia-repl
-julia> t = ccall(:clock, Int32, ())
+julia> t = @ccall clock()::Int32
 2292761
 
 julia> t
@@ -75,31 +55,18 @@ julia> typeof(t)
 Int32
 ```
 
-`clock` takes no arguments and returns an [`Int32`](@ref). One common mistake is forgetting that a 1-tuple of
-argument types must be written with a trailing comma. For example, to call the `getenv` function
+`clock` takes no arguments and returns an `Int32`. To call the `getenv` function
 to get a pointer to the value of an environment variable, one makes a call like this:
 
 ```julia-repl
-julia> path = ccall(:getenv, Cstring, (Cstring,), "SHELL")
+julia> @ccall getenv("SHELL"::Cstring)::Cstring
 Cstring(@0x00007fff5fbffc45)
 
 julia> unsafe_string(path)
 "/bin/bash"
 ```
 
-Note that the argument type tuple must be written as `(Cstring,)`, not `(Cstring)`. This
-is because `(Cstring)` is just the expression `Cstring` surrounded by parentheses, rather than
-a 1-tuple containing `Cstring`:
-
-```jldoctest
-julia> (Cstring)
-Cstring
-
-julia> (Cstring,)
-(Cstring,)
-```
-
-In practice, especially when providing reusable functionality, one generally wraps [`ccall`](@ref)
+In practice, especially when providing reusable functionality, one generally wraps `@ccall`
 uses in Julia functions that set up arguments and then check for errors in whatever manner the
 C or Fortran function specifies. And if an error occurs it is thrown as a normal Julia exception. This is especially
 important since C and Fortran APIs are notoriously inconsistent about how they indicate error
@@ -108,15 +75,15 @@ which is a simplified version of the actual definition from [`env.jl`](https://g
 
 ```julia
 function getenv(var::AbstractString)
-    val = ccall(:getenv, Cstring, (Cstring,), var)
-    if val == C_NULL
+    val = @ccall getenv(var::Cstring)::Cstring
+    if val == C_nullL
         error("getenv: undefined variable: ", var)
     end
     return unsafe_string(val)
 end
 ```
 
-The C `getenv` function indicates an error by returning `NULL`, but other standard C functions
+The C `getenv` function indicates an error by returning `nullL`, but other standard C functions
 indicate errors in various different ways, including by returning -1, 0, 1 and other special values.
 This wrapper throws an exception clearly indicating the problem if the caller tries to get a non-existent
 environment variable:
@@ -126,20 +93,16 @@ julia> getenv("SHELL")
 "/bin/bash"
 
 julia> getenv("FOOBAR")
-getenv: undefined variable: FOOBAR
+ERROR: getenv: undefined variable: FOOBAR
 ```
 
 Here is a slightly more complex example that discovers the local machine's hostname.
 In this example, the networking library code is assumed to be in a shared library named "libc".
-In practice, this function is usually part of the C standard library, and so the "libc"
-portion should be omitted, but we wish to show here the usage of this syntax.
 
 ```julia
 function gethostname()
     hostname = Vector{UInt8}(undef, 256) # MAXHOSTNAMELEN
-    err = ccall((:gethostname, "libc"), Int32,
-                (Ptr{UInt8}, Csize_t),
-                hostname, sizeof(hostname))
+    err = @ccall gethostname(hostname::Ptr{UInt8}, sizeof(hostname)::Csize_t)::Int32
     Base.systemerror("gethostname", err != 0)
     hostname[end] = 0 # ensure null-termination
     return GC.@preserve hostname unsafe_string(pointer(hostname))
@@ -148,13 +111,13 @@ end
 
 This example first allocates an array of bytes. It then calls the C library function `gethostname`
 to populate the array with the hostname. Finally, it takes a pointer to the hostname buffer, and
-converts the pointer to a Julia string, assuming that it is a NUL-terminated C string.
+converts the pointer to a Julia string, assuming that it is a null-terminated C string.
 
 It is common for C libraries to use this pattern of requiring the caller to allocate memory to be
 passed to the callee and populated. Allocation of memory from Julia like this is generally
 accomplished by creating an uninitialized array and passing a pointer to its data to the C function.
 This is why we don't use the `Cstring` type here: as the array is uninitialized, it could contain
-NUL bytes. Converting to a `Cstring` as part of the [`ccall`](@ref) checks for contained NUL bytes
+null bytes. Converting to a `Cstring` as part of the `@ccall` checks for contained null bytes
 and could therefore throw a conversion error.
 
 Dereferencing `pointer(hostname)` with `unsafe_string` is an unsafe operation as it requires access to
@@ -178,7 +141,7 @@ Julia function. The arguments to [`@cfunction`](@ref) are:
 3. A tuple of input types, corresponding to the function signature
 
 !!! note
-    As with `ccall`, the return type and tuple of input types must be literal constants.
+    As with `@ccall`, the return type and tuple of input types must be literal constants.
 
 !!! note
     Currently, only the platform-default C calling convention is supported. This means that
@@ -209,8 +172,7 @@ calling `qsort` and passing arguments, we need to write a comparison function:
 ```jldoctest mycompare
 julia> function mycompare(a, b)::Cint
            return (a < b) ? -1 : ((a > b) ? +1 : 0)
-       end
-mycompare (generic function with 1 method)
+       end;
 ```
 
 `qsort` expects a comparison function that return a C `int`, so we annotate the return type
@@ -236,8 +198,7 @@ julia> A = [1.3, -2.7, 4.4, 3.1]
   4.4
   3.1
 
-julia> ccall(:qsort, Cvoid, (Ptr{Cdouble}, Csize_t, Csize_t, Ptr{Cvoid}),
-             A, length(A), sizeof(eltype(A)), mycompare_c)
+julia> @ccall qsort(A::Ptr{Cdouble}, length(A)::Csize_t, sizeof(eltype(A))::Csize_t, mycompare_c::Ptr{Cvoid})::Cvoid
 
 julia> A
 4-element Vector{Float64}:
@@ -271,15 +232,16 @@ Julia automatically inserts calls to the [`Base.cconvert`](@ref) function to con
 to the specified type. For example, the following call:
 
 ```julia
-ccall((:foo, "libfoo"), Cvoid, (Int32, Float64), x, y)
+@ccall "libfoo".foo(x::Int32, y::Float64)::Cvoid
 ```
 
 will behave as if it were written like this:
 
 ```julia
-ccall((:foo, "libfoo"), Cvoid, (Int32, Float64),
-      Base.unsafe_convert(Int32, Base.cconvert(Int32, x)),
-      Base.unsafe_convert(Float64, Base.cconvert(Float64, y)))
+@ccall "libfoo".foo(
+    Base.unsafe_convert(Int32, Base.cconvert(Int32, x))::Int32,
+    Base.unsafe_convert(Float64, Base.cconvert(Float64, y))::Float64
+    )::Cvoid
 ```
 
 [`Base.cconvert`](@ref) normally just calls [`convert`](@ref), but can be defined to return an
@@ -345,7 +307,7 @@ same:
     that the element type of the array matches `T`, and the address of the first element is passed.
 
     Therefore, if an `Array` contains data in the wrong format, it will have to be explicitly converted
-    using a call such as `trunc(Int32, a)`.
+    using a call such as `trunc.(Int32, A)`.
 
     To pass an array `A` as a pointer of a different type *without* converting the data beforehand
     (for example, to pass a `Float64` array to a function that operates on uninterpreted bytes), you
@@ -387,7 +349,7 @@ an `Int` in Julia).
 | `void` and `[[noreturn]]` or `_Noreturn`                |                          |                      | `Union{}`                                                                                                      |
 | `void*`                                                 |                          |                      | `Ptr{Cvoid}` (or similarly `Ref{Cvoid}`)                                                                       |
 | `T*` (where T represents an appropriately defined type) |                          |                      | `Ref{T}` (T may be safely mutated only if T is an isbits type)                                                 |
-| `char*` (or `char[]`, e.g. a string)                    | `CHARACTER*N`            |                      | `Cstring` if NUL-terminated, or `Ptr{UInt8}` if not                                                            |
+| `char*` (or `char[]`, e.g. a string)                    | `CHARACTER*N`            |                      | `Cstring` if null-terminated, or `Ptr{UInt8}` if not                                                            |
 | `char**` (or `*char[]`)                                 |                          |                      | `Ptr{Ptr{UInt8}}`                                                                                              |
 | `jl_value_t*` (any Julia Type)                          |                          |                      | `Any`                                                                                                          |
 | `jl_value_t* const*` (a reference to a Julia value)     |                          |                      | `Ref{Any}` (const, since mutation would require a write barrier, which is not possible to insert correctly)    |
@@ -396,10 +358,10 @@ an `Int` in Julia).
 | `...` (variadic function specification)                 |                          |                      | `; va_arg1::T, va_arg2::S, etc.` (only supported with `@ccall` macro)                                          |
 
 The [`Cstring`](@ref) type is essentially a synonym for `Ptr{UInt8}`, except the conversion to `Cstring`
-throws an error if the Julia string contains any embedded NUL characters (which would cause the
-string to be silently truncated if the C routine treats NUL as the terminator).  If you are passing
-a `char*` to a C routine that does not assume NUL termination (e.g. because you pass an explicit
-string length), or if you know for certain that your Julia string does not contain NUL and want
+throws an error if the Julia string contains any embedded null characters (which would cause the
+string to be silently truncated if the C routine treats null as the terminator). If you are passing
+a `char*` to a C routine that does not assume null termination (e.g. because you pass an explicit
+string length), or if you know for certain that your Julia string does not contain null and want
 to skip the check, you can use `Ptr{UInt8}` as the argument type. `Cstring` can also be used as
 the [`ccall`](@ref) return type, but in that case it obviously does not introduce any extra
 checks and is only meant to improve readability of the call.
@@ -419,7 +381,7 @@ checks and is only meant to improve readability of the call.
     `Ref{..}` wrapper around their type specification.
 
 !!! warning
-    For string arguments (`char*`) the Julia type should be `Cstring` (if NUL- terminated data is
+    For string arguments (`char*`) the Julia type should be `Cstring` (if null- terminated data is
     expected), or either `Ptr{Cchar}` or `Ptr{UInt8}` otherwise (these two pointer types have the same
     effect), as described above, not `String`. Similarly, for array arguments (`T[]` or `T*`), the
     Julia type should again be `Ptr{T}`, not `Vector{T}`.
@@ -431,14 +393,14 @@ checks and is only meant to improve readability of the call.
 !!! warning
     A return type of `Union{}` means the function will not return, i.e., C++11 `[[noreturn]]` or C11
     `_Noreturn` (e.g. `jl_throw` or `longjmp`). Do not use this for functions that return no value
-    (`void`) but do return, use `Cvoid` instead.
+    (`void`) but do in return, use `Cvoid` instead.
 
 !!! note
     For `wchar_t*` arguments, the Julia type should be [`Cwstring`](@ref) (if the C routine expects a
-    NUL-terminated string), or `Ptr{Cwchar_t}` otherwise. Note also that UTF-8 string data in Julia is
-    internally NUL-terminated, so it can be passed to C functions expecting NUL-terminated data without
+    null-terminated string), or `Ptr{Cwchar_t}` otherwise. Note also that UTF-8 string data in Julia is
+    internally null-terminated, so it can be passed to C functions expecting null-terminated data without
     making a copy (but using the `Cwstring` type will cause an error to be thrown if the string itself
-    contains NUL characters).
+    contains null characters).
 
 !!! note
     C functions that take an argument of type `char**` can be called by using a `Ptr{Ptr{UInt8}}`
@@ -452,7 +414,7 @@ checks and is only meant to improve readability of the call.
 
     ```julia
     argv = [ "a.out", "arg1", "arg2" ]
-    ccall(:main, Int32, (Int32, Ptr{Ptr{UInt8}}), length(argv), argv)
+    @ccall main(length(argv)::Cint, argv::Ptr{Ptr{UInt8}})::Cint
     ```
 
 !!! note
@@ -505,7 +467,7 @@ You can get an approximation of a `union` if you know, a priori, the field that 
 the greatest size (potentially including padding). When translating your fields to Julia, declare
 the Julia field to be only of that type.
 
-Arrays of parameters can be expressed with `NTuple`.  For example, the struct in C notation written as
+Arrays of parameters can be expressed with `NTuple`. For example, the struct in C notation written as
 
 ```c
 struct B {
@@ -546,7 +508,7 @@ unsafe_string(str + Core.sizeof(Cint), len)
 
 ### Type Parameters
 
-The type arguments to `ccall` and `@cfunction` are evaluated statically,
+The type arguments to `@ccall` and `@cfunction` are evaluated statically,
 when the method containing the usage is defined.
 They therefore must take the form of a literal tuple, not a variable,
 and cannot reference local variables.
@@ -559,9 +521,9 @@ However, while the type layout must be known statically to compute the intended 
 the static parameters of the function are considered to be part of this static environment.
 The static parameters of the function may be used as type parameters in the call signature,
 as long as they don't affect the layout of the type.
-For example, `f(x::T) where {T} = ccall(:valid, Ptr{T}, (Ptr{T},), x)`
+For example, `f(x::T) where {T} = @ccall valid(x::Ptr{T}):: Ptr{T}`
 is valid, since `Ptr` is always a word-size primitive type.
-But, `g(x::T) where {T} = ccall(:notvalid, T, (T,), x)`
+But, `g(x::T) where {T} = @ccall notvalid(x::T)::T`
 is not valid, since the type layout of `T` is not known statically.
 
 ### SIMD Values
@@ -569,7 +531,7 @@ is not valid, since the type layout of `T` is not known statically.
 Note: This feature is currently implemented on 64-bit x86 and AArch64 platforms only.
 
 If a C/C++ routine has an argument or return value that is a native SIMD type, the corresponding
-Julia type is a homogeneous tuple of `VecElement` that naturally maps to the SIMD type.  Specifically:
+Julia type is a homogeneous tuple of `VecElement` that naturally maps to the SIMD type. Specifically:
 
 >   * The tuple must be the same size as the SIMD type. For example, a tuple representing an `__m128`
 >     on x86 must have a size of 16 bytes.
@@ -596,13 +558,13 @@ a = m256(ntuple(i -> VecElement(sin(Float32(i))), 8))
 b = m256(ntuple(i -> VecElement(cos(Float32(i))), 8))
 
 function call_dist(a::m256, b::m256)
-    ccall((:dist, "libdist"), m256, (m256, m256), a, b)
+    @ccall "libdist".dist(a::m256, b::m256)::m256
 end
 
 println(call_dist(a,b))
 ```
 
-The host machine must have the requisite SIMD registers.  For example, the code above will not
+The host machine must have the requisite SIMD registers. For example, the code above will not
 work on hosts without AVX support.
 
 ### Memory Ownership
@@ -618,7 +580,7 @@ allocated in Julia to be freed by an external library) is equally invalid.
 ### When to use T, Ptr{T} and Ref{T}
 
 In Julia code wrapping calls to external C routines, ordinary (non-pointer) data should be declared
-to be of type `T` inside the [`ccall`](@ref), as they are passed by value.  For C code accepting
+to be of type `T` inside the [`ccall`](@ref), as they are passed by value. For C code accepting
 pointers, [`Ref{T}`](@ref) should generally be used for the types of input arguments, allowing the use
 of pointers to memory managed by either Julia or C through the implicit call to [`Base.cconvert`](@ref).
 In contrast, pointers returned by the C function called should be declared to be of output type
@@ -633,7 +595,7 @@ Fortran subroutines, or a `T` for Fortran functions returning the type `T`.
 
 ## Mapping C Functions to Julia
 
-### `ccall` / `@cfunction` argument translation guide
+### `@ccall` / `@cfunction` argument translation guide
 
 For translating a C argument list to Julia:
 
@@ -659,7 +621,7 @@ For translating a C argument list to Julia:
   * `jl_value_t* const*`
 
       * `Ref{Any}`
-      * argument list must be a valid Julia object (or `C_NULL`)
+      * argument list must be a valid Julia object (or `C_nullL`)
       * cannot be used for an output parameter, unless the user is able to
         separately arrange for the object to be GC-preserved
   * `T*`
@@ -683,7 +645,7 @@ For translating a C argument list to Julia:
 
       * not supported by `ccall` or `@cfunction`
 
-### `ccall` / `@cfunction` return type translation guide
+### `@ccall` / `@cfunction` return type translation guide
 
 For translating a C return type to Julia:
 
@@ -725,20 +687,20 @@ For translating a C return type to Julia:
           * `Ptr{T}`, where `T` is the Julia type corresponding to `T`
   * `T (*)(...)` (e.g. a pointer to a function)
 
-      * `Ptr{Cvoid}` to call this directly from Julia you will need to pass this as the first argument to [`ccall`](@ref).
+      * `Ptr{Cvoid}` to call this directly from Julia you will need to pass this as the first argument to `@ccall`.
         See [Indirect Calls](@ref).
 
 ### Passing Pointers for Modifying Inputs
 
 Because C doesn't support multiple return values, often C functions will take pointers to data
-that the function will modify. To accomplish this within a [`ccall`](@ref), you need to first
+that the function will modify. To accomplish this within a `@ccall`, you need to first
 encapsulate the value inside a [`Ref{T}`](@ref) of the appropriate type. When you pass this `Ref` object
 as an argument, Julia will automatically pass a C pointer to the encapsulated data:
 
 ```julia
 width = Ref{Cint}(0)
 range = Ref{Cfloat}(0)
-ccall(:foo, Cvoid, (Ref{Cint}, Ref{Cfloat}), width, range)
+@ccall foo(width::Ref{Cint}, range::Ref{Cfloat})::Cvoid
 ```
 
 Upon return, the contents of `width` and `range` can be retrieved (if they were changed by `foo`)
@@ -755,13 +717,8 @@ end
 # The corresponding C signature is
 #     gsl_permutation * gsl_permutation_alloc (size_t n);
 function permutation_alloc(n::Integer)
-    output_ptr = ccall(
-        (:gsl_permutation_alloc, :libgsl), # name of C function and library
-        Ptr{gsl_permutation},              # output type
-        (Csize_t,),                        # tuple of input types
-        n                                  # name of Julia variable to pass in
-    )
-    if output_ptr == C_NULL # Could not allocate memory
+    output_ptr = @ccall "libgsl".gsl_permutation_alloc(n::Csize_t)::Ptr{gsl_permutation}
+    if output_ptr == C_nullL # Could not allocate memory
         throw(OutOfMemoryError())
     end
     return output_ptr
@@ -773,13 +730,13 @@ through `:libgsl`) defines an opaque pointer, `gsl_permutation *`, as the return
 function `gsl_permutation_alloc`. As user code never has to look inside the `gsl_permutation`
 struct, the corresponding Julia wrapper simply needs a new type declaration, `gsl_permutation`,
 that has no internal fields and whose sole purpose is to be placed in the type parameter of a
-`Ptr` type.  The return type of the [`ccall`](@ref) is declared as `Ptr{gsl_permutation}`, since
+`Ptr` type. The return type of the [`ccall`](@ref) is declared as `Ptr{gsl_permutation}`, since
 the memory allocated and pointed to by `output_ptr` is controlled by C.
 
 The input `n` is passed by value, and so the function's input signature is
-simply declared as `(Csize_t,)` without any `Ref` or `Ptr` necessary. (If the
+simply declared as `::Csize_t` without any `Ref` or `Ptr` necessary. (If the
 wrapper was calling a Fortran function instead, the corresponding function input
-signature would instead be `(Ref{Csize_t},)`, since Fortran variables are
+signature would instead be `::Ref{Csize_t}`, since Fortran variables are
 passed by pointers.) Furthermore, `n` can be any type that is convertible to a
 `Csize_t` integer; the [`ccall`](@ref) implicitly calls [`Base.cconvert(Csize_t,
 n)`](@ref).
@@ -790,27 +747,22 @@ Here is a second example wrapping the corresponding destructor:
 # The corresponding C signature is
 #     void gsl_permutation_free (gsl_permutation * p);
 function permutation_free(p::Ref{gsl_permutation})
-    ccall(
-        (:gsl_permutation_free, :libgsl), # name of C function and library
-        Cvoid,                             # output type
-        (Ref{gsl_permutation},),          # tuple of input types
-        p                                 # name of Julia variable to pass in
-    )
+    @ccall "libgsl".gsl_permutation_free(p::Ref{gsl_permutation})::Cvoid
 end
 ```
 
 Here, the input `p` is declared to be of type `Ref{gsl_permutation}`, meaning that the memory
 that `p` points to may be managed by Julia or by C. A pointer to memory allocated by C should
-be of type `Ptr{gsl_permutation}`, but it is convertible using [`Base.cconvert`](@ref) and therefore
+be of type `Ptr{gsl_permutation}`, but it is convertible using [`Base.cconvert`](@ref).
 
 Now if you look closely enough at this example, you may notice that it is incorrect, given our explanation
-above of preferred declaration types. Do you see it? The function we are calling is going to free the
+above of preferred declaration types. The function we are calling is going to free the
 memory. This type of operation cannot be given a Julia object (it will crash or cause memory corruption).
 Therefore, it may be preferable to declare the `p` type as `Ptr{gsl_permutation }`, to make it harder for the
 user to mistakenly pass another sort of object there than one obtained via `gsl_permutation_alloc`.
 
 If the C wrapper never expects the user to pass pointers to memory managed by Julia, then using
-`p::Ptr{gsl_permutation}` for the method signature of the wrapper and similarly in the [`ccall`](@ref)
+`p::Ptr{gsl_permutation}` for the method signature of the wrapper and similarly in the `@ccall`
 is also acceptable.
 
 Here is a third example passing Julia arrays:
@@ -824,12 +776,8 @@ function sf_bessel_Jn_array(nmin::Integer, nmax::Integer, x::Real)
         throw(DomainError())
     end
     result_array = Vector{Cdouble}(undef, nmax - nmin + 1)
-    errorcode = ccall(
-        (:gsl_sf_bessel_Jn_array, :libgsl), # name of C function and library
-        Cint,                               # output type
-        (Cint, Cint, Cdouble, Ref{Cdouble}),# tuple of input types
-        nmin, nmax, x, result_array         # names of Julia variables to pass in
-    )
+    errorcode = @ccall "libgsl".gsl_sf_bessel_Jn_array(
+                    nmin::Cint, nmax::Cint, x::Cdouble, result_array::Ref{Cdouble})::Cint
     if errorcode != 0
         error("GSL error code $errorcode")
     end
@@ -847,7 +795,7 @@ the Julia pointer to a Julia array data structure into a form understandable by 
 
 The following example utilizes `ccall` to call a function in a common Fortran library (libBLAS) to
 computes a dot product. Notice that the argument mapping is a bit different here than above, as
-we need to map from Julia to Fortran.  On every argument type, we specify `Ref` or `Ptr`. This
+we need to map from Julia to Fortran. On every argument type, we specify `Ref` or `Ptr`. This
 mangling convention may be specific to your fortran compiler and operating system, and is likely
 undocumented. However, wrapping each in a `Ref` (or `Ptr`, where equivalent) is a frequent
 requirement of Fortran compiler implementations:
@@ -857,10 +805,8 @@ function compute_dot(DX::Vector{Float64}, DY::Vector{Float64})
     @assert length(DX) == length(DY)
     n = length(DX)
     incx = incy = 1
-    product = ccall((:ddot_, "libLAPACK"),
-                    Float64,
-                    (Ref{Int32}, Ptr{Float64}, Ref{Int32}, Ptr{Float64}, Ref{Int32}),
-                    n, DX, incx, DY, incy)
+    product = @ccall "libLAPACK".ddot(
+        n::Ref{Int32}, DX::Ptr{Float64}, incx::Ref{Int32}, DY::Ptr{Float64}, incy::Ref{Int32})::Float64
     return product
 end
 ```
@@ -868,10 +814,10 @@ end
 
 ## Garbage Collection Safety
 
-When passing data to a [`ccall`](@ref), it is best to avoid using the [`pointer`](@ref) function.
-Instead define a convert method and pass the variables directly to the [`ccall`](@ref). [`ccall`](@ref)
+When passing data to a @ccall, it is best to avoid using the [`pointer`](@ref) function.
+Instead define a convert method and pass the variables directly to the `@ccall`. `@ccall`
 automatically arranges that all of its arguments will be preserved from garbage collection until
-the call returns. If a C API will store a reference to memory allocated by Julia, after the [`ccall`](@ref)
+the call returns. If a C API will store a reference to memory allocated by Julia, after the `@ccall`
 returns, you must ensure that the object remains visible to the garbage collector. The suggested
 way to do this is to make a global variable of type `Array{Ref,1}` to hold these values, until
 the C library notifies you that it is finished with them.
@@ -902,10 +848,10 @@ If even more flexibility is needed, it is possible
 to use computed values as function names by staging through [`eval`](@ref) as follows:
 
 ```
-@eval ccall(($(string("a", "b")), "lib"), ...
+ @ccall string("a", "b")."lib"(...)::
 ```
 
-This expression constructs a name using `string`, then substitutes this name into a new [`ccall`](@ref)
+This expression constructs a name using `string`, then substitutes this name into a new `@ccall`
 expression, which is then evaluated. Keep in mind that `eval` only operates at the top level,
 so within this expression local variables will not be available (unless their values are substituted
 with `$`). For this reason, `eval` is typically only used to form top-level definitions, for example
@@ -918,9 +864,9 @@ The next section discusses how to use indirect calls to efficiently achieve a si
 
 ## Indirect Calls
 
-The first argument to [`ccall`](@ref) can also be an expression evaluated at run time. In this
+The first argument to `@ccall` can also be an expression evaluated at run time. In this
 case, the expression must evaluate to a `Ptr`, which will be used as the address of the native
-function to call. This behavior occurs when the first [`ccall`](@ref) argument contains references
+function to call. This behavior occurs when the first `@ccall` argument contains references
 to non-constants, such as local variables, function arguments, or non-constant globals.
 
 For example, you might look up the function via `dlsym`,
@@ -928,10 +874,10 @@ then cache it in a shared reference for that session. For example:
 
 ```julia
 macro dlsym(func, lib)
-    z = Ref{Ptr{Cvoid}}(C_NULL)
+    z = Ref{Ptr{Cvoid}}(C_nullL)
     quote
         let zlocal = $z[]
-            if zlocal == C_NULL
+            if zlocal == C_nullL
                 zlocal = dlsym($(esc(lib))::Ptr{Cvoid}, $(esc(func)))::Ptr{Cvoid}
                 $z[] = zlocal
             end
@@ -991,16 +937,16 @@ ccall(sym, ...) # Use the pointer `sym` instead of the (symbol, library) tuple (
 Libdl.dlclose(lib) # Close the library explicitly.
 ```
 
-Note that when using `ccall` with the tuple input
-(e.g., `ccall((:my_fcn, "./my_lib.so"), ...)`), the library is opened implicitly
+Note that when using `@ccall` with the input
+(e.g., `@ccall "./my_lib.so".my_fcn(...)::`), the library is opened implicitly
 and it may not be explicitly closed.
 
 ## Calling Convention
 
-The second argument to [`ccall`](@ref) can optionally be a calling convention specifier (immediately
+The second argument to `ccall` can optionally be a calling convention specifier (immediately
 preceding return type). Without any specifier, the platform-default C calling convention is used.
 Other supported conventions are: `stdcall`, `cdecl`, `fastcall`, and `thiscall` (no-op on 64-bit Windows).
-For example (from `base/libc.jl`) we see the same `gethostname`[`ccall`](@ref) as above, but with the correct
+For example (from `base/libc.jl`) we see the same `gethostname``ccall` as above, but with the correct
 signature for Windows:
 
 ```julia
@@ -1065,7 +1011,7 @@ the result will be a reference to this object, and the object will not be copied
 careful in this case to ensure that the object was always visible to the garbage collector (pointers
 do not count, but the new reference does) to ensure the memory is not prematurely freed. Note
 that if the object was not originally allocated by Julia, the new object will never be finalized
-by Julia's garbage collector.  If the `Ptr` itself is actually a `jl_value_t*`, it can be converted
+by Julia's garbage collector. If the `Ptr` itself is actually a `jl_value_t*`, it can be converted
 back to a Julia object reference by [`unsafe_pointer_to_objref(ptr)`](@ref). (Julia values `v`
 can be converted to `jl_value_t*` pointers, as `Ptr{Cvoid}`, by calling [`pointer_from_objref(v)`](@ref).)
 
@@ -1079,7 +1025,7 @@ a bug so that it can be resolved.
 If the pointer of interest is a plain-data array (primitive type or immutable struct), the function
 [`unsafe_wrap(Array, ptr,dims, own = false)`](@ref)
 may be more useful. The final parameter should be true if Julia should "take ownership" of the
-underlying buffer and call `free(ptr)` when the returned `Array` object is finalized.  If the
+underlying buffer and call `free(ptr)` when the returned `Array` object is finalized. If the
 `own` parameter is omitted or false, the caller must ensure the buffer remains in existence until
 all access is complete.
 
