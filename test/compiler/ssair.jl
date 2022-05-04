@@ -121,7 +121,7 @@ let cfg = CFG(BasicBlock[
     make_bb([2, 3]    , []    ),
 ], Int[])
     insts = Compiler.InstructionStream([], [], Any[], Int32[], UInt8[])
-    code = Compiler.IRCode(insts, cfg, LineInfoNode[], [], [], [])
+    code = Compiler.IRCode(insts, cfg, LineInfoNode[], [], Expr[], [])
     compact = Compiler.IncrementalCompact(code, true)
     @test length(compact.result_bbs) == 4 && 0 in compact.result_bbs[3].preds
 end
@@ -333,4 +333,26 @@ f_if_typecheck() = (if nothing; end; unsafe_load(Ptr{Int}(0)))
     cmd = `$(Base.julia_cmd()) -g 2 -e $code`
     stderr = IOBuffer()
     success(pipeline(Cmd(cmd); stdout=stdout, stderr=stderr)) && isempty(String(take!(stderr)))
+end
+
+let src = code_typed(; optimize=true) do
+        local a
+        try
+            a = a + 1
+        catch err
+            @isdefined a
+        end
+    end |> only |> first
+    @test any(src.code) do @nospecialize x
+        Meta.isexpr(x, :throw_undef_if_not) && x.args[1] === :a
+    end
+end
+let src = code_typed() do
+        a = @isdefined x
+        x = 42
+        b = @isdefined x
+        a, b
+    end |> only |> first
+    ret = (only(src.code)::Core.ReturnNode).val
+    @test ret === (false, true)
 end
